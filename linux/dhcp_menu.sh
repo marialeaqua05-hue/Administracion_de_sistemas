@@ -1,8 +1,13 @@
 #!/bin/bash
 
+#Importar funciones
+SCRIPT_DIR=$(dirname "$0")
+LIB_FILE="$SCRIPT_DIR/main_dns.sh"
+
 # --- VARIABLES ---
 INTERFACE="enp0s8"
 DHCP_CONF="/etc/dhcp/dhcpd.conf"
+
 
 # --- UTILIDADES ---
 function pause(){ read -p "Presiona Enter para continuar..."; }
@@ -44,6 +49,15 @@ function calcular_mascara() {
 }
 
 # --- MÓDULOS ---
+function menu_dns() {
+    if [ -f "$LIB_FILE" ]; then
+        bash "$LIB_FILE"
+    else
+        echo "Error: No encuentro el archivo $LIB_FILE"
+        read -p "Enter..."
+    fi
+}
+
 function instalar_dhcp() {
     clear
     echo "=== INSTALACION DHCP ==="
@@ -179,13 +193,15 @@ while true; do
     echo "2. Verificar"
     echo "3. Configurar"
     echo "4. Monitorear"
-    echo "5. Salir"
+    echo "5. Submenu DNS"
+    echo "6. Salir"
     read -p "Opción: " op
     case $op in
         1) instalar_dhcp ;;
         2) verificar_instalacion ;;
         3) configurar_dhcp ;;
         4) monitorear ;;
-        5) exit 0 ;;
+	5) menu_dns ;;
+        6) exit 0 ;;
     esac
 done
