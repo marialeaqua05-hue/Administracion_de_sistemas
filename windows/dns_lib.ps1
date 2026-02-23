@@ -1,151 +1,204 @@
 <#
 .SYNOPSIS
-    Libreria DNS
+    Libreria de funciones de DNS Server (Seguridad y Validacion Integrada)
 #>
 
-# Variable "Script Scope"
 $Script:ServerIP = $null
 $Script:Interface = $Global:InterfaceAlias
 
+# --- NUEVA FUNCIÓN DE VALIDACIÓN ESTRICTA ---
+function Test-ValidIP ($IP) {
+    # 1. ¿Es un formato IP reconocible?
+    if (-not ($IP -as [System.Net.IPAddress])) { return $false }
+    # 2. Bloquear IPs que no pueden ser servidores DNS
+    if ($IP -match "^0\.") { return $false }       # Bloquea 0.0.0.0
+    if ($IP -match "^127\.") { return $false }     # Bloquea Loopback
+    if ($IP -match "^169\.254\.") { return $false } # Bloquea APIPA de Windows
+    
+    return $true
+}
+
 function Get-SystemIP {
-    # 1. Intentamos detectar la IP estatica manual (la que configuraste en DHCP)
-    # Buscamos IPs que NO sean de autoconfiguracion (169.254) ni localhost (127)
+    # Utilizamos la nueva validacion para filtrar IPs basura del sistema
     $ipConfig = Get-NetIPAddress -AddressFamily IPv4 | Where-Object { 
-        $_.IPAddress -notlike "169.254.*" -and $_.IPAddress -notlike "127.*" -and $_.PrefixOrigin -eq "Manual"
+        (Test-ValidIP $_.IPAddress) -and $_.PrefixOrigin -eq "Manual"
     } | Select-Object -First 1
     
-    # 2. Si no hay manual, tomamos cualquiera valida (caso de reserva DHCP)
     if (-not $ipConfig) {
         $ipConfig = Get-NetIPAddress -AddressFamily IPv4 | Where-Object { 
-            $_.IPAddress -notlike "169.254.*" -and $_.IPAddress -notlike "127.*" 
+            (Test-ValidIP $_.IPAddress)
         } | Select-Object -First 1
     }
     
     if ($ipConfig) {
         $Script:ServerIP = $ipConfig.IPAddress
-        # Guardamos el Alias de la interfaz que tiene la IP Servidor
         $Script:Interface = $ipConfig.InterfaceAlias
         return $true
     }
     return $false
 }
 
+function Wait-Action {
+    Write-Host "`nPresione cualquier tecla para continuar..." -NoNewline
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+}
+
 function Install-DNS-Feature {
     Clear-Host
-    Write-Host "--- GESTOR DE INSTALACION DNS ---" -ForegroundColor Cyan
+    Write-Host "*** PREPARACION DE SERVIDOR DNS ***`n"
     
     if (Get-WindowsFeature DNS | Where-Object Installed) {
-        Write-Host "[INFO] El rol DNS ya esta presente." -ForegroundColor Yellow
+        Write-Host ">> Modulo DNS activo en el sistema."
     } else {
-        Write-Host "[...] Instalando Servidor DNS..." -ForegroundColor Cyan
-        Install-WindowsFeature DNS -IncludeManagementTools
-        Write-Host "[OK] Instalado." -ForegroundColor Green
+        Write-Host ">> Desplegando caracteristica DNS Server..."
+        Install-WindowsFeature DNS -IncludeManagementTools | Out-Null
+        Write-Host ">> Finalizado."
     }
 
     if (Get-SystemIP) {
-        Write-Host "`n[CONFIG] Configurando Resolucion para TODAS las interfaces..." -ForegroundColor Cyan
-        Write-Host "   IP del Servidor detectada: $Script:ServerIP"
-        Write-Host "   Aplicando esta IP como DNS UNICO en todos los adaptadores..."
+        Write-Host "`n>> Redirigiendo consultas DNS locales..."
+        Write-Host "   IP maestra validada: $Script:ServerIP"
         
-        # --- CORRECCION CRITICA: BARRIDO TOTAL ---
-        # Obtenemos TODAS las tarjetas de red fisicas/virtuales activas
         $adapters = Get-NetAdapter | Where-Object Status -eq "Up"
-        
         foreach ($nic in $adapters) {
-            Write-Host "   -> Configurando adaptador: $($nic.Name)" -ForegroundColor Gray
-            # Forzamos que usen TU servidor como DNS (y nada mas)
+            Write-Host "   - Ajustando adaptador: $($nic.Name)"
             Set-DnsClientServerAddress -InterfaceAlias $nic.Name -ServerAddresses $Script:ServerIP
         }
         
-        # Limpiamos cache para olvidar al 192.168.100.1
         Clear-DnsClientCache
-        # -----------------------------------------
-        
-        Write-Host "[OK] El servidor ahora tiene control total del DNS." -ForegroundColor Green
+        Write-Host "[*] El servidor responde ahora unicamente a sus propios registros."
     } else {
-        Write-Error "[ERROR] No se detecto ninguna IP valida en el servidor."
+        Write-Host "Error critico: No se identifico IP valida en el servidor."
     }
-    Read-Host "Presiona Enter..."
+    Wait-Action
 }
 
 function New-ZoneDomain {
     Clear-Host
-    Write-Host "--- AGREGAR NUEVO DOMINIO ---" -ForegroundColor Cyan
+    Write-Host "*** ALTA DE NUEVO DOMINIO ***`n"
     
-    if (-not (Get-SystemIP)) { Write-Error "Sin IP detectada."; Read-Host; return }
+    if (-not (Get-SystemIP)) { Write-Host "Se requiere configurar una IP valida en la red primero."; Wait-Action; return }
 
-    $DomainName = Read-Host "Nombre del Dominio (ej. reprobados.com)"
+    $DomainName = Read-Host "Especifique el nombre DNS (Ej: empresa.local)"
     if ([string]::IsNullOrWhiteSpace($DomainName)) { return }
 
     if (Get-DnsServerZone -Name $DomainName -ErrorAction SilentlyContinue) {
-        Write-Warning "[WARN] El dominio '$DomainName' ya existe."
-        Read-Host; return
+        Write-Host "Aviso: Zona ya registrada."
+        Wait-Action; return
     }
 
-    Write-Host "[...] Creando zona apuntando a $Script:ServerIP ..."
+    Write-Host "`n>> Procesando Zona de Busqueda Directa..."
     try {
         Add-DnsServerPrimaryZone -Name $DomainName -ZoneFile "$DomainName.dns" -ErrorAction Stop
         
         $recs = @("@", "ns1", "www")
         foreach ($rec in $recs) {
-            Add-DnsServerResourceRecordA -ZoneName $DomainName -Name $rec -IPv4Address $Script:ServerIP
+            Add-DnsServerResourceRecordA -ZoneName $DomainName -Name $rec -IPv4Address $Script:ServerIP | Out-Null
         }
+        Write-Host "[*] Zona y registros base creados."
+
+        Write-Host "`n>> Procesando Zona de Busqueda Inversa (PTR)..."
         
-        Write-Host "[OK] Dominio '$DomainName' configurado exitosamente." -ForegroundColor Green
+        $Octets = $Script:ServerIP.Split(".")
+        $NetworkId = "$($Octets[0]).$($Octets[1]).$($Octets[2]).0/24"
+        $ReverseZoneName = "$($Octets[2]).$($Octets[1]).$($Octets[0]).in-addr.arpa"
+        $HostOctet = $Octets[3]
+
+        if (-not (Get-DnsServerZone -Name $ReverseZoneName -ErrorAction SilentlyContinue)) {
+            Write-Host "   - Generando archivo para red $NetworkId"
+            Add-DnsServerPrimaryZone -NetworkId $NetworkId -ZoneFile "$ReverseZoneName.dns" | Out-Null
+        }
+
+        Add-DnsServerResourceRecordPtr -Name $HostOctet -ZoneName $ReverseZoneName -PtrDomainName "$DomainName" -ErrorAction SilentlyContinue | Out-Null
+        Write-Host "[*] Puntero inverso (PTR) configurado correctamente."
+
     } catch {
-        Write-Error "Error creando zona: $_"
+        Write-Host "Fallo durante la configuracion: $_"
     }
-    Read-Host "Presiona Enter..."
+    Wait-Action
 }
 
 function Remove-ZoneDomain {
     Clear-Host
-    Write-Host "--- ELIMINAR DOMINIO ---" -ForegroundColor Cyan
+    Write-Host "*** BAJA DE DOMINIO ***`n"
     
-    $DomainName = Read-Host "Nombre del dominio a borrar"
+    $DomainName = Read-Host "Indique el dominio a remover del sistema"
     
     if (Get-DnsServerZone -Name $DomainName -ErrorAction SilentlyContinue) {
         Remove-DnsServerZone -Name $DomainName -Force -Confirm:$false
-        Write-Host "[OK] Dominio eliminado." -ForegroundColor Green
+        Write-Host "[*] Dominio y registros vinculados fueron removidos."
     } else {
-        Write-Warning "El dominio no existe."
+        Write-Host "El recurso indicado no se encuentra activo."
     }
-    Read-Host "Presiona Enter..."
+    Wait-Action
 }
 
 function Get-ZoneList {
     Clear-Host
-    Write-Host "--- DOMINIOS REGISTRADOS ---" -ForegroundColor Cyan
+    Write-Host "*** INVENTARIO DE ZONAS DNS ***`n"
     $zones = Get-DnsServerZone | Where-Object { $_.IsAutoCreated -eq $false }
     
     if ($zones) {
         $zones | Select-Object ZoneName, ZoneType, IsDsIntegrated | Format-Table -AutoSize
     } else {
-        Write-Host "No hay zonas configuradas." -ForegroundColor Gray
+        Write-Host "No existen registros en la base de datos."
     }
-    Read-Host "Presiona Enter..."
+    Wait-Action
 }
 
 function Test-DNSResolution {
     Clear-Host
-    Write-Host "--- PRUEBA DE RESOLUCION ---" -ForegroundColor Cyan
+    Write-Host "*** DIAGNOSTICO DE RESOLUCION ***`n"
     
-    # Re-verificamos la IP para asegurar que el mensaje de exito sea correcto
     Get-SystemIP | Out-Null
     
-    $Target = Read-Host "Dominio a probar"
+    $Target = Read-Host "Escriba el dominio a consultar"
+    if ([string]::IsNullOrWhiteSpace($Target)) { return }
     
-    Write-Host "`n[TEST] Consultando DNS (NSLOOKUP)..." -ForegroundColor Yellow
+    Write-Host "`n--- Test Directo (A) ---"
     nslookup $Target
     
-    Write-Host "`n[TEST] Probando Conectividad (PING)..." -ForegroundColor Yellow
+    Write-Host "`n--- Test Inverso (PTR) ---"
+    nslookup $Script:ServerIP
+    
+    Write-Host "`n--- Verificacion ICMP ---"
     try {
         Test-Connection -ComputerName $Target -Count 1 -ErrorAction Stop | Select-Object Address, ResponseTime, Status
-        Write-Host "[OK] Conexion Exitosa." -ForegroundColor Green
+        Write-Host "[*] Ping recibido."
     } catch {
-        # Si el ping falla pero nslookup resolvio a TU IP, es exito parcial (Firewall)
-        Write-Warning "El Ping fallo (Probablemente Firewall)." 
-        Write-Host "NOTA: Si arriba en 'Address' salio $Script:ServerIP, tu DNS funciona perfecto." -ForegroundColor Green
+        Write-Host "Aviso: Ping denegado. (Puede ser normal si el Firewall bloquea ICMP)." 
     }
-    Read-Host "Presiona Enter..."
+    Wait-Action
+}
+
+function dns_menu {
+    do {
+        Clear-Host
+        Write-Host "=========================================="
+        Write-Host "         MODULO DE RESOLUCION DNS"
+        Write-Host "=========================================="
+        Write-Host ""
+        Write-Host " [ 1 ] Preparar Servidor y Forzar Localhost"
+        Write-Host " [ 2 ] Registrar Dominio (A / PTR)"
+        Write-Host " [ 3 ] Remover Dominio Existente"
+        Write-Host " [ 4 ] Visualizar Zonas Activas"
+        Write-Host " [ 5 ] Lanzar Diagnostico (Nslookup)"
+        Write-Host " [ 0 ] Retornar al Panel Central"
+        Write-Host ""
+        
+        $Selection = Read-Host "Indique su eleccion"
+        
+        switch ($Selection.Trim()) {
+            '1' { Install-DNS-Feature }
+            '2' { New-ZoneDomain }
+            '3' { Remove-ZoneDomain }
+            '4' { Get-ZoneList }
+            '5' { Test-DNSResolution }
+            '0' { return }
+            default { 
+                Write-Host "Entrada invalida." 
+                Start-Sleep -Seconds 1
+            }
+        }
+    } until ($false)
 }
