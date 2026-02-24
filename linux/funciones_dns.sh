@@ -199,9 +199,14 @@ EOF
         log_warn "El PTR ya existía."
     fi
 
-    # Recargar BIND
+    # Recargar o Iniciar BIND
     if named-checkconf; then
-        systemctl reload named
+        if systemctl is-active --quiet named; then
+            systemctl reload named
+        else
+            systemctl start named
+            systemctl enable named
+        fi
         log_msg "Configuración aplicada exitosamente."
     else
         log_err "Error de sintaxis BIND."
@@ -270,12 +275,12 @@ function probar_dns() {
     DOMINIO=$(limpiar_str "$DOMINIO")
     
     echo ""
-    echo -e "${YELLOW}[TEST 1] Búsqueda Directa (nslookup $DOMINIO)${NC}"
-    nslookup $DOMINIO
+    echo -e "${YELLOW}[TEST 1] Búsqueda Directa forzada al DNS local (nslookup $DOMINIO $SERVER_IP)${NC}"
+    nslookup $DOMINIO $SERVER_IP
     
     echo ""
-    echo -e "${YELLOW}[TEST 2] Búsqueda Inversa (nslookup $SERVER_IP)${NC}"
-    nslookup $SERVER_IP
+    echo -e "${YELLOW}[TEST 2] Búsqueda Inversa forzada al DNS local (nslookup $SERVER_IP $SERVER_IP)${NC}"
+    nslookup $SERVER_IP $SERVER_IP
     
     echo ""
     echo -e "${YELLOW}[TEST 3] Ping...${NC}"
