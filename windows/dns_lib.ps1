@@ -4,37 +4,28 @@
 #>
 
 $Script:ServerIP = $null
-$Script:Interface = $Global:InterfaceAlias
+# PON AQUÍ EL NOMBRE EXACTO DE TU ADAPTADOR DE RED INTERNA (Suele ser "Ethernet 2")
+$Script:Interface = "Ethernet 2" 
 
 # --- NUEVA FUNCIÓN DE VALIDACIÓN ESTRICTA ---
 function Test-ValidIP ($IP) {
-    # 1. ¿Es un formato IP reconocible?
     if (-not ($IP -as [System.Net.IPAddress])) { return $false }
-    # 2. Bloquear IPs que no pueden ser servidores DNS
-    if ($IP -match "^0\.") { return $false }       # Bloquea 0.0.0.0
-    if ($IP -match "^127\.") { return $false }     # Bloquea Loopback
-    if ($IP -match "^169\.254\.") { return $false } # Bloquea APIPA de Windows
-    
+    if ($IP -match "^0\.") { return $false }       
+    if ($IP -match "^127\.") { return $false }     
+    if ($IP -match "^169\.254\.") { return $false } 
     return $true
 }
 
 function Get-SystemIP {
-    # Utilizamos la nueva validacion para filtrar IPs basura del sistema
-    $ipConfig = Get-NetIPAddress -AddressFamily IPv4 | Where-Object { 
-        (Test-ValidIP $_.IPAddress) -and $_.PrefixOrigin -eq "Manual"
-    } | Select-Object -First 1
-    
-    if (-not $ipConfig) {
-        $ipConfig = Get-NetIPAddress -AddressFamily IPv4 | Where-Object { 
-            (Test-ValidIP $_.IPAddress)
-        } | Select-Object -First 1
-    }
+    $ipConfig = Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias $Script:Interface -ErrorAction SilentlyContinue | 
+                Where-Object { Test-ValidIP $_.IPAddress } | Select-Object -First 1
     
     if ($ipConfig) {
         $Script:ServerIP = $ipConfig.IPAddress
-        $Script:Interface = $ipConfig.InterfaceAlias
         return $true
     }
+    
+    Write-Host "Error: No se encontro una IP valida en el adaptador $Script:Interface" -ForegroundColor Red
     return $false
 }
 
@@ -155,11 +146,11 @@ function Test-DNSResolution {
     $Target = Read-Host "Escriba el dominio a consultar"
     if ([string]::IsNullOrWhiteSpace($Target)) { return }
     
-    Write-Host "`n--- Test Directo (A) ---"
-    nslookup $Target
+    Write-Host "`n--- Test Directo (A) forzado al DNS local ---"
+    nslookup $Target $Script:ServerIP
     
-    Write-Host "`n--- Test Inverso (PTR) ---"
-    nslookup $Script:ServerIP
+    Write-Host "`n--- Test Inverso (PTR) forzado al DNS local ---"
+    nslookup $Script:ServerIP $Script:ServerIP
     
     Write-Host "`n--- Verificacion ICMP ---"
     try {
