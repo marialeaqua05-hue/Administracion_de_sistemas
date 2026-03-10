@@ -14,10 +14,14 @@ $ScriptDir = $PSScriptRoot
 $DHCP_Lib = Join-Path $ScriptDir "dhcp_funciones.ps1"
 $DNS_Lib  = Join-Path $ScriptDir "dns_lib.ps1"
 $SSH_Lib  = Join-Path $ScriptDir "ssh_funciones.ps1"
+$FTP_Lib = Join-Path $ScriptDir "ftp.ps1"
+$HTTP_Lib = Join-Path $ScriptDir "http.ps1"
 
 if (Test-Path $DHCP_Lib) { . $DHCP_Lib } else { Write-Host "Falta: dhcp_funciones.ps1" }
 if (Test-Path $DNS_Lib)  { . $DNS_Lib  } else { Write-Host "Falta: dns_lib.ps1" }
 if (Test-Path $SSH_Lib)  { . $SSH_Lib  } else { Write-Host "Falta: ssh_lib.ps1" }
+if (Test-Path $FTP_Lib) { . $FTP_Lib } else { Write-Host "Falta: ftp.ps1" }
+if (Test-Path $HTTP_Lib) { . $HTTP_Lib } else { Write-Host "Falta: http.ps1" }
 
 Start-Sleep -Seconds 1
 
@@ -31,6 +35,8 @@ do {
     Write-Host " [ 1 ] Gestion de Red (DHCP)"
     Write-Host " [ 2 ] Resolucion de Nombres (DNS)"
     Write-Host " [ 3 ] Acceso Remoto (SSH)"
+    Write-Host " [ 4 ] Transferencia de archivos (FTP)"
+    Write-Host " [ 5 ] Aprovisionamiento Web (HTTP)"
     Write-Host " [ 0 ] Salir del Sistema"
     Write-Host ""
     
@@ -48,6 +54,14 @@ do {
         '3' { 
             if (Get-Command ssh_menu -ErrorAction SilentlyContinue) { ssh_menu } 
             else { Write-Host "Modulo SSH no disponible."; Start-Sleep -Seconds 1 } 
+        }
+	'4' { 
+    	    if (Get-Command Menu-FTP -ErrorAction SilentlyContinue) { Menu-FTP } 
+    	    else { Write-Host "Modulo FTP no disponible."; Start-Sleep -Seconds 1 }
+	}
+	'5' { 
+            if (Get-Command Menu-HTTP -ErrorAction SilentlyContinue) { Menu-HTTP } 
+            else { Write-Host "Modulo HTTP no disponible."; Start-Sleep -Seconds 1 }
         }
         '0' { Write-Host "`nCerrando panel..."; exit }
         default { Write-Host "Comando no reconocido." ; Start-Sleep -Seconds 1 }
