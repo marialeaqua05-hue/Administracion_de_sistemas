@@ -59,6 +59,19 @@ seleccionar_version() {
     done
 }
 
+# CERRAR PUERTOS POR DEFECTO SI NO SE USAN
+cerrar_puertos_defecto() {
+    local puerto_nuevo=$1
+    local puertos_defecto=(80 8080 8443)
+
+    for p in "${puertos_defecto[@]}"; do
+        if [[ "$puerto_nuevo" -ne "$p" ]]; then
+            firewall-cmd --remove-port="$p/tcp" --permanent > /dev/null 2>&1
+        fi
+    done
+    firewall-cmd --reload > /dev/null 2>&1
+}
+
 # MÓDULOS DE INSTALACIÓN
 
 instalar_apache() {
@@ -93,7 +106,11 @@ instalar_apache() {
     
     echo "[*] Configurando Firewall (firewalld)..."
     firewall-cmd --add-port="$puerto/tcp" --permanent > /dev/null 2>&1
-    firewall-cmd --reload > /dev/null 2>&1
+    cerrar_puertos_defecto "$puerto"
+
+    echo "[*] Autorizando puerto $puerto en SELinux..."
+    semanage port -a -t http_port_t -p tcp "$puerto" 2>/dev/null || \
+    semanage port -m -t http_port_t -p tcp "$puerto" 2>/dev/null
     
     echo "[*] Reiniciando servicio para aplicar cambios..."
     systemctl enable httpd > /dev/null 2>&1
@@ -130,11 +147,14 @@ instalar_nginx() {
     
     echo "[*] Configurando Firewall (firewalld)..."
     firewall-cmd --add-port="$puerto/tcp" --permanent > /dev/null 2>&1
-    firewall-cmd --reload > /dev/null 2>&1
+    cerrar_puertos_defecto "$puerto"
     
     echo "[*] Reiniciando servicio para aplicar cambios..."
     # OJO: Si Apache está corriendo en el 80, Nginx DEBE ir en otro puerto o fallará al arrancar
     systemctl enable nginx > /dev/null 2>&1
+    echo "[*] Autorizando puerto $puerto en SELinux..."
+    semanage port -a -t http_port_t -p tcp "$puerto" 2>/dev/null || \
+    semanage port -m -t http_port_t -p tcp "$puerto" 2>/dev/null
     systemctl restart nginx
     
     echo -e "\n[OK] Nginx desplegado y asegurado con éxito en el puerto $puerto."
@@ -165,13 +185,114 @@ instalar_tomcat() {
     
     echo "[*] Configurando Firewall (firewalld)..."
     firewall-cmd --add-port="$puerto/tcp" --permanent > /dev/null 2>&1
-    firewall-cmd --reload > /dev/null 2>&1
+    cerrar_puertos_defecto "$puerto"
+
+    echo "[*] Autorizando puerto $puerto en SELinux..."
+    semanage port -a -t http_port_t -p tcp "$puerto" 2>/dev/null || \
+    semanage port -m -t http_port_t -p tcp "$puerto" 2>/dev/null
     
     echo "[*] Reiniciando servicio para aplicar cambios..."
     systemctl enable tomcat > /dev/null 2>&1
     systemctl restart tomcat
     
     echo -e "\n[OK] Tomcat desplegado y asegurado con éxito en el puerto $puerto."
+}
+
+# ==========================================
+# CAMBIAR PUERTO DE SERVICIO EXISTENTE
+# ==========================================
+cambiar_puerto() {
+    echo -e "\n--- Cambiar Puerto de Servicio HTTP ---"
+    echo "  1) Apache (httpd)"
+    echo "  2) Nginx"
+    echo "  3) Tomcat"
+    read -p "Seleccione el servicio: " servicio
+
+    if [[ ! "$servicio" =~ ^[1-3]$ ]]; then
+        echo "[!] Opcion invalida."
+        return 1
+    fi
+
+    local puerto_input
+    while true; do
+        read -p "Ingrese el nuevo puerto de escucha: " puerto_input
+        if validar_puerto "$puerto_input"; then break; fi
+    done
+
+    case $servicio in
+        1)
+            if ! systemctl is-active --quiet httpd; then
+                echo "[!] Apache no esta instalado o no esta corriendo."
+                return 1
+            fi
+            echo "[*] Cambiando puerto de Apache a $puerto_input..."
+            sed -i "s/^Listen .*/Listen $puerto_input/g" /etc/httpd/conf/httpd.conf
+            puerto_anterior=$(ss -tlnp | grep httpd | awk '{print $4}' | cut -d: -f2 | head -1)
+            if [[ -n "$puerto_anterior" ]]; then
+                firewall-cmd --remove-port="$puerto_anterior/tcp" --permanent > /dev/null 2>&1
+            fi
+            firewall-cmd --add-port="$puerto_input/tcp" --permanent > /dev/null 2>&1
+            firewall-cmd --reload > /dev/null 2>&1
+            sed -i "s/Puerto: [0-9]*/Puerto: $puerto_input/" /var/www/html/index.html
+            echo "[*] Autorizando puerto $puerto_input en SELinux..."
+            semanage port -a -t http_port_t -p tcp "$puerto_input" 2>/dev/null || \
+            semanage port -m -t http_port_t -p tcp "$puerto_input" 2>/dev/null
+            systemctl restart httpd
+            if systemctl is-active --quiet httpd; then
+                echo "[OK] Puerto de Apache cambiado a $puerto_input."
+            else
+                echo "[!] Apache no inicio. Revisa: journalctl -xeu httpd.service"
+            fi
+            ;;
+        2)
+            if ! systemctl is-active --quiet nginx; then
+                echo "[!] Nginx no esta instalado o no esta corriendo."
+                return 1
+            fi
+            echo "[*] Cambiando puerto de Nginx a $puerto_input..."
+            sed -i -E "s/listen\s+[0-9]+\s*;/listen       $puerto_input;/g" /etc/nginx/nginx.conf
+            sed -i -E "s/listen\s+\[::\]:[0-9]+\s*;/listen       [::]:$puerto_input;/g" /etc/nginx/nginx.conf
+            puerto_anterior=$(ss -tlnp | grep nginx | awk '{print $4}' | cut -d: -f2 | head -1)
+            if [[ -n "$puerto_anterior" ]]; then
+                firewall-cmd --remove-port="$puerto_anterior/tcp" --permanent > /dev/null 2>&1
+            fi
+            firewall-cmd --add-port="$puerto_input/tcp" --permanent > /dev/null 2>&1
+            firewall-cmd --reload > /dev/null 2>&1
+            sed -i "s/Puerto: [0-9]*/Puerto: $puerto_input/" /usr/share/nginx/html/index.html
+            echo "[*] Autorizando puerto $puerto_input en SELinux..."
+            semanage port -a -t http_port_t -p tcp "$puerto_input" 2>/dev/null || \
+            semanage port -m -t http_port_t -p tcp "$puerto_input" 2>/dev/null
+            systemctl restart nginx
+            if systemctl is-active --quiet nginx; then
+                echo "[OK] Puerto de Nginx cambiado a $puerto_input."
+            else
+                echo "[!] Nginx no inicio. Revisa: journalctl -xeu nginx.service"
+            fi
+            ;;
+        3)
+            if ! systemctl is-active --quiet tomcat; then
+                echo "[!] Tomcat no esta instalado o no esta corriendo."
+                return 1
+            fi
+            echo "[*] Cambiando puerto de Tomcat a $puerto_input..."
+            puerto_anterior=$(grep -oP 'port="\K[0-9]+' /etc/tomcat/server.xml | head -1)
+            sed -i "s/port=\"$puerto_anterior\"/port=\"$puerto_input\"/g" /etc/tomcat/server.xml
+            if [[ -n "$puerto_anterior" ]]; then
+                firewall-cmd --remove-port="$puerto_anterior/tcp" --permanent > /dev/null 2>&1
+            fi
+            firewall-cmd --add-port="$puerto_input/tcp" --permanent > /dev/null 2>&1
+            firewall-cmd --reload > /dev/null 2>&1
+            echo "[*] Autorizando puerto $puerto_input en SELinux..."
+            semanage port -a -t http_port_t -p tcp "$puerto_input" 2>/dev/null || \
+            semanage port -m -t http_port_t -p tcp "$puerto_input" 2>/dev/null
+            systemctl restart tomcat
+            if systemctl is-active --quiet tomcat; then
+                echo "[OK] Puerto de Tomcat cambiado a $puerto_input."
+            else
+                echo "[!] Tomcat no inicio. Revisa: journalctl -xeu tomcat.service"
+            fi
+            ;;
+    esac
 }
 
 # ==========================================
@@ -187,28 +308,32 @@ function menu_http() {
         echo "  1) Apache (httpd)"
         echo "  2) Nginx"
         echo "  3) Tomcat"
+	echo "  4) Cambiar puerto de servicio existente"
         echo "  0) Regresar al Menú Principal"
         echo "========================================================="
         read -p "Ingrese una opción: " opcion
 
         if [[ "$opcion" == "0" ]]; then break; fi
-        if [[ ! "$opcion" =~ ^[1-3]$ ]]; then
+        if [[ ! "$opcion" =~ ^[1-4]$ ]]; then
             echo "[!] Error: Opción no válida."
             read -p "Presione Enter para continuar..."
             continue
         fi
 
-        local puerto_input
-        while true; do
-            read -p "Ingrese el puerto de escucha deseado (ej. 80, 8080): " puerto_input
-            if validar_puerto "$puerto_input"; then break; fi
-        done
-
-        case $opcion in
-            1) instalar_apache "$puerto_input" ;;
-            2) instalar_nginx "$puerto_input" ;;
-            3) instalar_tomcat "$puerto_input" ;;
-        esac
+        if [[ "$opcion" == "4" ]]; then
+            cambiar_puerto
+        else
+            local puerto_input
+            while true; do
+                read -p "Ingrese el puerto de escucha deseado (ej. 80, 8080): " puerto_input
+                if validar_puerto "$puerto_input"; then break; fi
+            done
+            case $opcion in
+                1) instalar_apache "$puerto_input" ;;
+                2) instalar_nginx "$puerto_input" ;;
+                3) instalar_tomcat "$puerto_input" ;;
+            esac
+        fi
 
         echo ""
         read -p "Presione Enter para continuar..."
