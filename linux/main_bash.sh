@@ -8,6 +8,8 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
 source "$SCRIPT_DIR/ssh_funciones.sh"
 source "$SCRIPT_DIR/dhcp_funciones.sh"
 source "$SCRIPT_DIR/funciones_dns.sh"
+source "$SCRIPT_DIR/ftp.sh"
+source "$SCRIPT_DIR/http.sh"
 
 # 2. FUNCIONES AUXILIARES LOCALES
 function mostrar_encabezado() {
@@ -33,8 +35,10 @@ function menu_principal() {
         echo "2. Configurar Servicio DHCP (Refactorizado)"
         echo "3. Monitorear Estado de Red"
         echo "4. Salir"
+	echo "5. Aprovisionamiento Web HTTP (Apache/Nginx/Tomcat)"
+        echo "6. Salir"
         echo "------------------------------------------"
-        read -p "Seleccione una opción [1-4]: " opcion
+        read -p "Seleccione una opción [1-6]: " opcion
 
         case $opcion in
             1)
@@ -56,7 +60,22 @@ function menu_principal() {
                 ip -brief addr
                 read -p "Presione Enter para volver..."
                 ;;
-            4)
+	    4)
+		if declare -f menu_ftp > /dev/null; then
+                    menu_ftp
+                else
+                    echo "Error: Función menu_ftp no cargada."
+                fi
+                read -p "Presione Enter para volver..."
+                ;;
+	    5)
+                if declare -f menu_http > /dev/null; then
+                    menu_http
+                else
+                    echo "Error: Función menu_http no cargada."
+                fi
+                ;;
+            6)
                 echo "Saliendo del sistema..."
                 exit 0
                 ;;
