@@ -10,6 +10,7 @@ source "$SCRIPT_DIR/dhcp_funciones.sh"
 source "$SCRIPT_DIR/funciones_dns.sh"
 source "$SCRIPT_DIR/ftp.sh"
 source "$SCRIPT_DIR/http.sh"
+source "$SCRIPT_DIR/dockers.sh"
 
 # 2. FUNCIONES AUXILIARES LOCALES
 function mostrar_encabezado() {
@@ -23,7 +24,6 @@ function mostrar_encabezado() {
 
 # 3. MENÚ PRINCIPAL (Punto de entrada único)
 function menu_principal() {
-    # Validar que se ejecute como root antes de empezar
     if [[ $EUID -ne 0 ]]; then
        echo "Este script debe ser ejecutado como root." 
        exit 1
@@ -32,50 +32,58 @@ function menu_principal() {
     while true; do
         mostrar_encabezado
         echo "1. Implementar/Asegurar SSH (Acceso Remoto)"
-        echo "2. Configurar Servicio DHCP (Refactorizado)"
+        echo "2. Configurar Servicio DHCP"
         echo "3. Monitorear Estado de Red"
-        echo "4. Salir"
-	echo "5. Aprovisionamiento Web HTTP (Apache/Nginx/Tomcat)"
-        echo "6. Salir"
+        echo "4. Gestion FTP"
+        echo "5. Aprovisionamiento Web HTTP (Apache/Nginx/Tomcat)"
+	echo "6. Virtualización nativa, persistencia y seguridad en Dockers"
+        echo "0. Salir"
         echo "------------------------------------------"
-        read -p "Seleccione una opción [1-6]: " opcion
+        read -p "Seleccione una opción [0-6]: " opcion
 
         case $opcion in
             1)
-                # Llama a la función dentro de ssh_functions.sh
-                instalar_asegurar_ssh 
+                instalar_asegurar_ssh
                 read -p "Presione Enter para volver..."
                 ;;
             2)
-                # Llama a la función dentro de dhcp_functions.sh
                 if declare -f menu_dhcp > /dev/null; then
                     menu_dhcp
                 else
                     echo "Error: Función menu_dhcp no cargada."
+                    read -p "Presione Enter para volver..."
                 fi
-                read -p "Presione Enter para volver..."
                 ;;
             3)
                 echo "Estado de interfaces:"
                 ip -brief addr
                 read -p "Presione Enter para volver..."
                 ;;
-	    4)
-		if declare -f menu_ftp > /dev/null; then
+            4)
+                if declare -f menu_ftp > /dev/null; then
                     menu_ftp
                 else
                     echo "Error: Función menu_ftp no cargada."
+                    read -p "Presione Enter para volver..."
                 fi
-                read -p "Presione Enter para volver..."
                 ;;
-	    5)
+            5)
                 if declare -f menu_http > /dev/null; then
                     menu_http
                 else
                     echo "Error: Función menu_http no cargada."
+                    read -p "Presione Enter para volver..."
                 fi
                 ;;
-            6)
+	    6)
+		if declare -f menu_dockers > /dev/null; then
+		   menu_dockers
+		else
+		   echo "Error: Función menu_dockers no cargada."
+		   read -p "Presione Enter para volver..."
+		fi
+		;;
+            0)
                 echo "Saliendo del sistema..."
                 exit 0
                 ;;
